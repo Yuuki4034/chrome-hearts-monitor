@@ -230,3 +230,11 @@ if __name__ == "__main__":
         print("DRY RUN: products.json unchanged")
     else:
         main()
+
+# LINE新商品通知テスト（実際の商品履歴は変更しない）
+if __name__ == "__main__" and os.environ.get("TEST_LINE_ALERT") == "1":
+    send_line([
+        "https://www.chromehearts.com/test-category/TEST123.html"
+    ])
+    raise SystemExit(0)
+
