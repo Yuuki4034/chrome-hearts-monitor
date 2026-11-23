@@ -1,9 +1,17 @@
 
 import urllib.request
 import urllib.parse
+import urllib.error
 from html.parser import HTMLParser
 
-BASE = "https://www.chromehearts.com/"
+BASE = "https://www.chromehearts.com"
+
+CATEGORIES = [
+    "/socks",
+    "/scents",
+    "/intimates",
+    "/boxers-leggings",
+]
 
 class LinkParser(HTMLParser):
     def __init__(self):
@@ -13,31 +21,63 @@ class LinkParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag != "a":
             return
-        attributes = dict(attrs)
-        href = attributes.get("href")
-        if href:
-            url = urllib.parse.urljoin(BASE, href)
-            if url.startswith(BASE):
-                self.links.add(url.split("#")[0])
 
-request = urllib.request.Request(
-    BASE,
-    headers={"User-Agent": "Mozilla/5.0"}
-)
+        href = dict(attrs).get("href")
+        if not href:
+            return
 
-with urllib.request.urlopen(
-    request, timeout=30
-) as response:
-    html = response.read().decode(
-        "utf-8", errors="replace"
+        url = urllib.parse.urljoin(BASE, href)
+        parsed = urllib.parse.urlparse(url)
+
+        if parsed.netloc == "www.chromehearts.com":
+            clean = urllib.parse.urlunparse(
+                parsed._replace(query="", fragment="")
+            )
+            self.links.add(clean)
+
+def get_links(path):
+    url = BASE + path
+    print(f"\nChecking: {url}")
+
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0"}
     )
-    print("HTTP status:", response.status)
 
-parser = LinkParser()
-parser.feed(html)
+    try:
+        with urllib.request.urlopen(
+            request, timeout=20
+        ) as response:
+            html = response.read().decode(
+                "utf-8", errors="replace"
+            )
+            print("HTTP:", response.status)
+            print("HTML length:", len(html))
 
-print("HTML length:", len(html))
-print("Internal links:", len(parser.links))
+        parser = LinkParser()
+        parser.feed(html)
 
-for link in sorted(parser.links):
-    print(link)
+        category_prefix = url.rstrip("/") + "/"
+
+        product_candidates = sorted(
+            link for link in parser.links
+            if link.startswith(category_prefix)
+        )
+
+        print("Internal links:", len(parser.links))
+        print("Product candidates:",
+              len(product_candidates))
+
+        for link in product_candidates[:30]:
+            print("CANDIDATE:", link)
+
+        if not product_candidates:
+            print("No product links found under category path")
+
+    except urllib.error.HTTPError as error:
+        print("HTTP ERROR:", error.code)
+    except Exception as error:
+        print("ERROR:", type(error).__name__, str(error))
+
+for category in CATEGORIES:
+    get_links(category)
