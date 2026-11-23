@@ -221,4 +221,10 @@ def main():
     )
 
 if __name__ == "__main__":
-    main()
+    if os.environ.get("DRY_RUN") == "1":
+        current = collect()
+        print("DRY RUN: products found:", len(current))
+        print("DRY RUN: no LINE notifications")
+        print("DRY RUN: products.json unchanged")
+    else:
+        main()
