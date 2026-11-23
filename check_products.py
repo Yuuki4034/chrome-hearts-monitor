@@ -5,23 +5,27 @@ import re
 import time
 import urllib.request
 import urllib.parse
+import urllib.error
+from collections import deque
 from html.parser import HTMLParser
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 BASE = "https://www.chromehearts.com"
+HOSTS = {"www.chromehearts.com", "chromehearts.com"}
 STATE = Path("products.json")
 
-KNOWN = {
-    "socks", "scents", "intimates",
-    "boxers-leggings"
-}
-
+KNOWN = {"socks", "scents", "intimates", "boxers-leggings"}
 EXCLUDED = {
     "cart", "login", "contact", "baccarat",
     "locations", "magazine", "privacy",
-    "terms", "general", "disclosure"
+    "terms", "general", "disclosure",
+    "account", "checkout"
 }
+
+MAX_PAGES = 80
+MAX_DEPTH = 3
+DELAY = 1.0
 
 class Links(HTMLParser):
     def __init__(self):
@@ -37,30 +41,40 @@ class Links(HTMLParser):
             return
 
         url = urllib.parse.urljoin(BASE + "/", href)
-        p = urllib.parse.urlparse(url)
+        parsed = urllib.parse.urlparse(url)
 
-        if p.hostname not in (
-            "www.chromehearts.com",
-            "chromehearts.com"
-        ):
+        if parsed.hostname not in HOSTS:
             return
 
-        self.urls.add(BASE + p.path.rstrip("/"))
+        path = parsed.path.rstrip("/") or "/"
+        self.urls.add(BASE + path)
 
 def fetch(url):
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"}
-    )
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req, timeout=20) as response:
+                if response.status != 200:
+                    raise RuntimeError(
+                        f"HTTP {response.status}"
+                    )
+                html = response.read().decode(
+                    "utf-8", "replace"
+                )
 
-    with urllib.request.urlopen(req, timeout=25) as r:
-        if r.status != 200:
-            raise RuntimeError(f"HTTP {r.status}")
-        html = r.read().decode("utf-8", "replace")
+            parser = Links()
+            parser.feed(html)
+            return parser.urls
 
-    parser = Links()
-    parser.feed(html)
-    return parser.urls
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt == 2:
+                raise RuntimeError(
+                    f"Failed to fetch {url}: {exc}"
+                ) from exc
+            time.sleep(2 * (attempt + 1))
 
 def is_product(url):
     path = urllib.parse.urlparse(url).path
@@ -68,36 +82,73 @@ def is_product(url):
         r"/[^/]+/[A-Za-z0-9]+\.html$", path
     ))
 
+def is_category(url):
+    path = urllib.parse.urlparse(url).path.strip("/")
+    if not path:
+        return False
+
+    parts = path.split("/")
+    if parts[0].lower() in EXCLUDED:
+        return False
+
+    if any("." in part for part in parts):
+        return False
+
+    return len(parts) <= MAX_DEPTH
+
 def collect():
     home = fetch(BASE + "/")
-    categories = set(KNOWN)
+    categories = {
+        BASE + "/" + name for name in KNOWN
+    }
 
     for url in home:
-        path = urllib.parse.urlparse(url).path.strip("/")
-        if (
-            path
-            and "/" not in path
-            and "." not in path
-            and path not in EXCLUDED
-        ):
-            categories.add(path)
+        if is_category(url):
+            categories.add(url)
 
+    queue = deque(
+        (url, 1) for url in sorted(categories)
+    )
+    visited = set()
     products = set()
 
-    for category in sorted(categories):
-        url = BASE + "/" + category
+    while queue and len(visited) < MAX_PAGES:
+        url, depth = queue.popleft()
+
+        if url in visited:
+            continue
+
+        visited.add(url)
         print("Checking:", url, flush=True)
 
-        links = fetch(url)
-        found = {u for u in links if is_product(u)}
+        try:
+            links = fetch(url)
+        except Exception as exc:
+            print("Fetch error:", exc, flush=True)
+            raise
+
+        found = {
+            link for link in links if is_product(link)
+        }
         products.update(found)
 
         print("Products:", len(found), flush=True)
-        time.sleep(1)
+
+        if depth < MAX_DEPTH:
+            for link in sorted(links):
+                if (
+                    is_category(link)
+                    and link not in visited
+                ):
+                    queue.append((link, depth + 1))
+
+        time.sleep(DELAY)
 
     if not products:
         raise RuntimeError("No products found")
 
+    print("Pages checked:", len(visited))
+    print("Current products:", len(products))
     return products
 
 def send_line(urls):
@@ -110,7 +161,6 @@ def send_line(urls):
 
     for start in range(0, len(urls), 10):
         batch = urls[start:start + 10]
-
         lines = [
             "CHROME HEARTS ALERT",
             f"新商品候補: {len(urls)}件",
@@ -119,7 +169,9 @@ def send_line(urls):
         ]
 
         for url in batch:
-            parts = urllib.parse.urlparse(url).path.split("/")
+            parts = urllib.parse.urlparse(
+                url
+            ).path.split("/")
             name = parts[-2].replace("-", " ")
             lines.append(f"{name}\n{url}\n")
 
@@ -146,7 +198,6 @@ def send_line(urls):
 
 def main():
     current = collect()
-    print("Current products:", len(current))
 
     if not STATE.exists():
         STATE.write_text(
@@ -164,8 +215,9 @@ def main():
         send_line(new)
 
     STATE.write_text(
-        json.dumps(sorted(previous | current), indent=2)
-        + "\n"
+        json.dumps(
+            sorted(previous | current), indent=2
+        ) + "\n"
     )
 
 if __name__ == "__main__":
