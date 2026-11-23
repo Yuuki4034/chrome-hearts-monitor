@@ -98,6 +98,8 @@ def is_category(url):
 
 def collect():
     home = fetch(BASE + "/")
+    print("HOME LINKS FOUND:", len(home), flush=True)
+    print("HOME LINKS:", sorted(home), flush=True)
     categories = {
         BASE + "/" + name for name in KNOWN
     }
